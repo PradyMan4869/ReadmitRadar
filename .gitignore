@@ -6,6 +6,7 @@ storage/
 models/*.json
 models/*.pkl
 reports/*.png
+!reports/regime_comparison.png
 reports/*.json
 data_sources/synthea/
 tools/
