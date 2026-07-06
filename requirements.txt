@@ -1,0 +1,19 @@
+# Core ML
+python-dotenv>=1.0
+xgboost>=2.0
+scikit-learn>=1.4
+pandas>=2.0
+numpy>=1.26
+shap>=0.45
+matplotlib>=3.8
+
+# UI
+panel>=1.4
+
+# LLM / agents (all local / self-hosted — no PHI leaves the environment)
+openai>=1.30          # OpenAI-compatible client pointed at LM Studio, not OpenAI cloud
+pyautogen>=0.2.30     # optional: two-agent deliberation; code falls back without it
+langfuse>=2.30        # optional: self-hosted tracing; no-op when keys unset
+
+# Dev
+pytest>=8.0

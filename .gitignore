@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+storage/
+models/*.json
+models/*.pkl
+reports/*.png
+reports/*.json
+data_sources/synthea/
+tools/
+.ipynb_checkpoints/
+.claude/
