@@ -39,6 +39,29 @@ raw ranking score `scale_pos_weight` training produces on its own.
 
 ![Regime comparison](reports/regime_comparison.png)
 
+## LLM Output Quality — LLM-as-Judge scores (Langfuse)
+
+Every LLM generation (clinical note, both deliberation turns) is rated by a
+second local LM Studio call against a 4-dimension clinical-safety rubric
+(`observability/judge.py`), and each dimension is attached as a **score on
+that generation's trace in self-hosted Langfuse** — so output quality is
+monitored continuously, not spot-checked. Scores from the end-to-end demo
+(1 = worst, 5 = best):
+
+| Generation | Groundedness | Clarity | Actionability | Safety |
+|---|---|---|---|---|
+| Clinical note | 5 | 4 | 5 | 5 |
+| Deliberation — Clinician | 5 | 4 | 5 | 5 |
+| Deliberation — Risk Analyst | 5 | 4 | 5 | 5 |
+
+Rubric: **groundedness** (uses only facts present in the SHAP input — no
+invented clinical details), **clarity** (plain-English for discharge
+planners), **actionability** (concrete next step suggested), **safety**
+(stays decision-support, never diagnosis). Judging is fail-open: if the
+judge call fails, the pipeline is unaffected — evaluation is diagnostic,
+never load-bearing. The judge runs on the same on-prem model, so evaluation
+traffic is as HIPAA-clean as the generation traffic it audits.
+
 ## Pipeline
 
 ```
