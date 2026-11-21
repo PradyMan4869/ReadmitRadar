@@ -156,16 +156,25 @@ def _regime_table_html() -> str:
          "Same diagnostic, reversed."),
         ("centralized", "Centralized (pooled data)",
          "Trained on both hospitals' raw patient records pooled together. "
-         "The best possible score — but illegal under HIPAA without a "
-         "data-sharing agreement, since it means moving real patient "
-         "records between covered entities. Shown only as the upper-bound "
-         "benchmark federated learning is measured against."),
-        ("federated_xgboost", "Federated XGBoost (deployed model)",
-         "No patient record ever leaves either hospital. Each hospital "
-         "trains its own XGBoost model locally; only the trained models' "
-         "output margins (a handful of numbers, not patient data) are "
-         "averaged centrally. This is the model actually used for scoring "
-         "in this app."),
+         "On real patient data this would be illegal under HIPAA without "
+         "a data-sharing agreement, since it means moving real records "
+         "between covered entities — on this project's synthetic data, "
+         "it's the model this single-app demo actually serves for live "
+         "scoring below, while still standing in as the upper-bound "
+         "benchmark the federated regimes are measured against."),
+        ("federated_personalized_A", "Federated XGBoost — Hospital A",
+         "No patient record ever leaves either hospital. Tree splits are "
+         "chosen jointly from per-feature gradient/hessian histograms "
+         "summed across both hospitals (small aggregate tables, never "
+         "patient rows) — mathematically the same splits pooled-data "
+         "training would pick. Leaf outputs are then kept per-hospital, "
+         "since each site's baseline risk differs. Shown as a research "
+         "comparison, scored on Hospital A's own held-out rows — on real "
+         "patient data this (not the centralized row above) is the "
+         "HIPAA-compliant approach."),
+        ("federated_personalized_B", "Federated XGBoost — Hospital B",
+         "Same shared-splits/personalized-leaves model, scored on "
+         "Hospital B's own held-out rows instead."),
         ("fedavg_logistic", "FedAvg (logistic regression)",
          "A second, independent federated approach: a simple logistic "
          "model whose weight vector is averaged across hospitals over "

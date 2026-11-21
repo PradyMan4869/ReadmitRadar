@@ -26,7 +26,8 @@ REGIME_ORDER = [
     ("local_A", "Local — Hospital A only", GRAY),
     ("local_B", "Local — Hospital B only", GRAY),
     ("fedavg_logistic", "FedAvg (logistic)", BLUE),
-    ("federated_xgboost", "Federated XGBoost", BLUE),
+    ("federated_personalized_A", "Federated XGBoost — Hospital A", BLUE),
+    ("federated_personalized_B", "Federated XGBoost — Hospital B", BLUE),
     ("centralized", "Centralized (PHI pooled)", GRAY),
 ]
 
@@ -71,7 +72,8 @@ def plot_comparison(results: dict, out_path: Path) -> None:
         for spine in ax.spines.values():
             spine.set_visible(False)
 
-    fig.suptitle("30-day readmission — training regimes on pooled held-out set",
+    fig.suptitle("30-day readmission — training regimes (federated rows: "
+                 "each hospital's own held-out share; others: pooled set)",
                  fontsize=12, color=INK, x=0.01, ha="left")
     fig.tight_layout(rect=[0, 0, 1, 0.92])
     fig.savefig(out_path, dpi=150, facecolor=SURFACE, bbox_inches="tight")
@@ -97,10 +99,12 @@ def main() -> None:
     plot_comparison(results, chart)
     print(f"\nChart -> {chart}")
 
-    # The deployable model is the federated XGBoost ensemble; persist its
-    # members plus a centralized reference model for the UI's SHAP explainer.
-    for name, df in hospital_dfs.items():
-        ReadmissionModel().fit(df).save(MODELS_DIR / f"xgb_hospital_{name}.json")
+    # The UI serves the centralized (pooled) model for live scoring — the
+    # federated regimes above are a research comparison showing a
+    # privacy-preserving alternative matches it, not what's deployed.
+    # There's only one app/one deployment here, so there's no real
+    # multi-hospital split to serve across; this is a deliberate
+    # simplification of the demo, not a federated-learning deployment.
     pooled = pd.concat(hospital_dfs.values(), ignore_index=True)
     # Calibrated so predict_proba is a true probability (matches the actual
     # base rate) — the UI/demo display this as "risk %", so it must be

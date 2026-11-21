@@ -38,7 +38,6 @@ LOCAL_CODES = {
     "n_diagnoses":        ("active-diagnoses",       "Active diagnosis count"),
     "n_medications":      ("discharge-medications",  "Discharge medication count"),
     "charlson_index":     ("charlson-index",         "Charlson comorbidity index"),
-    "followup_scheduled": ("followup-scheduled",     "Follow-up visit scheduled (1=yes)"),
 }
 
 # Comorbidity conditions (ICD-10-CM)

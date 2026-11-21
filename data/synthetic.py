@@ -52,7 +52,6 @@ _TRUE_WEIGHTS = {
     "wbc_last": 0.02,           # per 10^3/uL over 11 (infection signal)
     "platelets_last": -0.0012,  # per 10^3/uL under 200 (thrombocytopenia risk)
     "discharged_to_snf": 0.30,
-    "followup_scheduled": -0.55,
     "gender_male": 0.05,
 }
 _INTERCEPT = -4.35  # calibrated to ~15-25% readmission rates per site
@@ -68,7 +67,7 @@ def _label_probability(df: pd.DataFrame) -> np.ndarray:
     z += _TRUE_WEIGHTS["n_medications"] * df["n_medications"]
     z += _TRUE_WEIGHTS["charlson_index"] * df["charlson_index"]
     for flag in ("has_chf", "has_copd", "has_diabetes", "has_renal_disease",
-                 "discharged_to_snf", "followup_scheduled", "gender_male"):
+                 "discharged_to_snf", "gender_male"):
         z += _TRUE_WEIGHTS[flag] * df[flag]
     z += _TRUE_WEIGHTS["bun_last"] * (df["bun_last"] - 20)
     z += _TRUE_WEIGHTS["creatinine_last"] * (df["creatinine_last"] - 1.0)
@@ -133,7 +132,6 @@ def generate_hospital(hospital: str, n: int, seed: int) -> pd.DataFrame:
     platelets = _clip(rng.normal(230 if cardiac else 250, 70, n), 20, 600).round()
 
     snf = rng.binomial(1, _clip(0.06 + 0.004 * (age - 60), 0.02, 0.55))
-    followup = rng.binomial(1, 0.72 if cardiac else 0.58, n)
 
     df = pd.DataFrame({
         "age": age, "gender_male": male, "length_of_stay": los,
@@ -147,7 +145,7 @@ def generate_hospital(hospital: str, n: int, seed: int) -> pd.DataFrame:
         "total_cholesterol_last": total_chol, "hdl_last": hdl, "ldl_last": ldl,
         "triglycerides_last": trig, "hba1c_last": hba1c,
         "potassium_last": potassium, "wbc_last": wbc, "platelets_last": platelets,
-        "discharged_to_snf": snf, "followup_scheduled": followup,
+        "discharged_to_snf": snf,
     })
     df[TARGET] = rng.binomial(1, _label_probability(df))
     df.insert(0, "patient_id", [f"{hospital}-{i:05d}" for i in range(n)])

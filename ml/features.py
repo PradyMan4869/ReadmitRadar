@@ -38,7 +38,6 @@ FEATURES = [
     ("wbc_last",             "WBC at discharge",             "10*3/uL"),
     ("platelets_last",       "Platelets at discharge",       "10*3/uL"),
     ("discharged_to_snf",    "Discharged to skilled nursing","0/1"),
-    ("followup_scheduled",   "Follow-up visit scheduled",    "0/1"),
 ]
 
 FEATURE_COLUMNS = [name for name, _, _ in FEATURES]

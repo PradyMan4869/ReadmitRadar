@@ -133,5 +133,35 @@ def evaluate(y_true: np.ndarray, y_prob: np.ndarray, threshold: float = 0.5) -> 
     }
 
 
+def bootstrap_ci(y_true: np.ndarray, y_prob: np.ndarray, n_resamples: int = 1000,
+                  seed: int = 0) -> dict:
+    """
+    Bootstrap 95% CI for ROC-AUC and PR-AUC on a fixed, already-fitted
+    model's predictions — resamples the test set (not the training data),
+    so it answers "how much does test-set sampling noise alone move this
+    score", not training variance. Two AUCs a few thousandths apart with
+    heavily overlapping CIs should be reported as statistically
+    indistinguishable, not as one regime "beating" another.
+    """
+    from sklearn.metrics import average_precision_score, roc_auc_score
+
+    rng = np.random.default_rng(seed)
+    n = len(y_true)
+    roc_samples, pr_samples = [], []
+    for _ in range(n_resamples):
+        idx = rng.integers(0, n, size=n)
+        yt, yp = y_true[idx], y_prob[idx]
+        if len(np.unique(yt)) < 2:
+            continue
+        roc_samples.append(roc_auc_score(yt, yp))
+        pr_samples.append(average_precision_score(yt, yp))
+    return {
+        "roc_auc_ci": [round(float(np.percentile(roc_samples, 2.5)), 4),
+                       round(float(np.percentile(roc_samples, 97.5)), 4)],
+        "pr_auc_ci": [round(float(np.percentile(pr_samples, 2.5)), 4),
+                      round(float(np.percentile(pr_samples, 97.5)), 4)],
+    }
+
+
 def save_metrics(metrics: dict, path: str | Path) -> None:
     Path(path).write_text(json.dumps(metrics, indent=2), encoding="utf-8")

@@ -70,8 +70,6 @@ def test_features_derived(tmp_path):
     run = _write_run(tmp_path, [
         _enc("p1", "emergency", "2021-01-10T00:00Z", "2021-01-10T06:00Z"),
         _enc("p1", "inpatient", "2021-03-01T00:00Z", "2021-03-05T00:00Z"),
-        # follow-up visit 7 days post-discharge
-        _enc("p1", "ambulatory", "2021-03-12T00:00Z", "2021-03-12T01:00Z"),
         _enc("p1", "wellness", "2021-08-01T00:00Z", "2021-08-01T01:00Z"),
         _enc("p2", "inpatient", "2021-05-01T00:00Z", "2021-05-04T00:00Z"),
         _enc("p2", "wellness", "2021-10-01T00:00Z", "2021-10-01T01:00Z"),
@@ -81,7 +79,6 @@ def test_features_derived(tmp_path):
 
     assert p1["has_chf"] == 1
     assert p1["ed_visits_6mo"] == 1
-    assert p1["followup_scheduled"] == 1
     assert p1["length_of_stay"] == pytest.approx(4.0)
     assert p1["bun_last"] == pytest.approx(28.0)
     assert p1["n_medications"] == 1

@@ -17,9 +17,12 @@ Feature notes:
   - Labs are the last observation at/before discharge, matched on exact
     LOINC CODE; missing labs are imputed with the cohort median and
     counted in the returned stats.
-  - `followup_scheduled` is proxied by a realized ambulatory/wellness visit
-    within 14 days post-discharge (Synthea records visits, not bookings).
   - `charlson_index` is a simplified Charlson from available flag groups.
+  - There is deliberately no "follow-up scheduled" feature: Synthea only
+    records realized visits, not bookings made at discharge time, so the
+    only available proxy (a visit actually occurring in the following
+    weeks) is information that doesn't exist yet at the moment the model
+    is meant to score — a real temporal-leakage risk, not a usable signal.
 """
 from __future__ import annotations
 
@@ -32,10 +35,8 @@ from ml.features import FEATURE_COLUMNS, TARGET
 
 INPATIENT_CLASSES = {"inpatient"}
 ED_CLASSES = {"emergency", "urgentcare"}
-FOLLOWUP_CLASSES = {"ambulatory", "wellness", "outpatient"}
 
 READMIT_WINDOW_DAYS = 30
-FOLLOWUP_WINDOW_DAYS = 14
 
 # condition DESCRIPTION keywords → comorbidity flags
 CONDITION_KEYWORDS = {
@@ -102,12 +103,121 @@ def _lab_feature_map(observations: pd.DataFrame) -> dict[str, pd.DataFrame]:
     return out
 
 
+def _asof_last_value(admissions: pd.DataFrame, events: pd.DataFrame,
+                      value_col: str) -> pd.Series:
+    """
+    For each admission (PATIENT, STOP), the most recent `events` row for
+    that patient with DATE <= STOP — a vectorized point-in-time join
+    replacing a per-admission "filter then take the last" loop.
+    """
+    if events.empty:
+        return pd.Series(np.nan, index=admissions.index)
+    ev = events.sort_values("DATE", kind="stable")
+    adm = admissions[["PATIENT", "STOP"]].reset_index().sort_values("STOP", kind="stable")
+    merged = pd.merge_asof(
+        adm, ev, left_on="STOP", right_on="DATE",
+        by="PATIENT", direction="backward",
+    )
+    return merged.set_index("index")[value_col].reindex(admissions.index)
+
+
+def _active_interval_count(admissions: pd.DataFrame, anchor_col: str,
+                            intervals: pd.DataFrame) -> pd.Series:
+    """
+    For each admission, count same-patient `intervals` (columns PATIENT,
+    START, STOP — STOP may be NaT for "still active") active at the
+    admission's anchor time: `START <= anchor <= STOP` (or STOP is NaT).
+
+    Vectorized as "started on/before anchor" minus "already ended before
+    anchor" — two merge_asof running counts per side, same pattern as
+    _windowed_count, so no per-admission cross join of every interval is
+    ever materialized (that approach blows up combinatorially at realistic
+    hospital population sizes: every admission x every lifetime condition).
+    """
+    if intervals.empty:
+        return pd.Series(0, index=admissions.index)
+
+    adm = admissions[["PATIENT", anchor_col]].reset_index()
+
+    starts = intervals[["PATIENT", "START"]].sort_values("START", kind="stable").copy()
+    starts["_cum"] = starts.groupby("PATIENT").cumcount() + 1
+    started_sorted = adm.sort_values(anchor_col)
+    merged_started = pd.merge_asof(
+        started_sorted, starts, left_on=anchor_col, right_on="START",
+        by="PATIENT", direction="backward", allow_exact_matches=True,
+    )
+    n_started = merged_started.set_index("index")["_cum"].reindex(adm["index"]).fillna(0)
+
+    ended = intervals.dropna(subset=["STOP"])[["PATIENT", "STOP"]].sort_values(
+        "STOP", kind="stable").copy()
+    if ended.empty:
+        n_ended = pd.Series(0, index=adm["index"])
+    else:
+        ended["_cum"] = ended.groupby("PATIENT").cumcount() + 1
+        ended_sorted = adm.sort_values(anchor_col)
+        merged_ended = pd.merge_asof(
+            ended_sorted, ended, left_on=anchor_col, right_on="STOP",
+            by="PATIENT", direction="backward", allow_exact_matches=False,
+        )
+        n_ended = merged_ended.set_index("index")["_cum"].reindex(adm["index"]).fillna(0)
+
+    result = n_started - n_ended
+    result.index = admissions.index
+    return result.astype(int)
+
+
+def _windowed_count(admissions: pd.DataFrame, anchor_col: str,
+                     events: pd.DataFrame, event_time_col: str,
+                     window_days: float) -> pd.Series:
+    """
+    For each admission, count same-patient `events` with
+    `admissions[anchor_col] - window_days <= events[event_time_col] < admissions[anchor_col]`
+    — vectorized via two merge_asof point-in-time counts (events strictly
+    before the anchor, minus events strictly before the window start).
+    `events` must exclude the admissions table itself when counting prior
+    admissions, so a same-day second admission never counts itself.
+    """
+    if events.empty:
+        return pd.Series(0, index=admissions.index)
+
+    ev = events[["PATIENT", event_time_col]].sort_values(event_time_col).copy()
+    ev["_cum"] = ev.groupby("PATIENT").cumcount() + 1
+
+    adm = admissions[["PATIENT", anchor_col]].reset_index()
+
+    # Count of events strictly before the admission anchor time (exclusive,
+    # so an event at the exact same instant as the anchor doesn't count —
+    # e.g. two admissions starting at the same timestamp).
+    before_sorted = adm.sort_values(anchor_col)
+    merged_before = pd.merge_asof(
+        before_sorted, ev, left_on=anchor_col, right_on=event_time_col,
+        by="PATIENT", direction="backward", allow_exact_matches=False,
+    )
+    count_before = merged_before.set_index("index")["_cum"].reindex(adm["index"]).fillna(0)
+
+    # Count of events strictly before the window start (anchor - window)
+    adm["_window_start"] = adm[anchor_col] - pd.Timedelta(days=window_days)
+    window_sorted = adm.sort_values("_window_start")
+    merged_window = pd.merge_asof(
+        window_sorted, ev, left_on="_window_start", right_on=event_time_col,
+        by="PATIENT", direction="backward", allow_exact_matches=False,
+    )
+    count_before_window = merged_window.set_index("index")["_cum"].reindex(adm["index"]).fillna(0)
+
+    result = count_before - count_before_window
+    result.index = admissions.index
+    return result.astype(int)
+
+
 def load_run(run_dir: Path, hospital: str) -> tuple[pd.DataFrame, dict]:
     """
     Build one hospital's discharge-record table from a Synthea run.
 
     Returns (records_df, stats) where stats reports admission counts and
-    lab imputation rates.
+    lab imputation rates. Vectorized (merge_asof point-in-time joins +
+    windowed counts) rather than a per-admission Python loop, since a
+    realistic hospital population (tens of thousands of admissions) makes
+    a 15-lab-lookups-per-row loop the dominant cost.
     """
     t = _read_run(Path(run_dir))
     patients = t["patients"].set_index("Id")
@@ -127,105 +237,64 @@ def load_run(run_dir: Path, hospital: str) -> tuple[pd.DataFrame, dict]:
     record_end = enc.groupby("PATIENT")["STOP"].max()
     observable = inpatient["STOP"] + pd.Timedelta(days=READMIT_WINDOW_DAYS) <= \
         inpatient["PATIENT"].map(record_end)
-    kept = inpatient[observable | (inpatient[TARGET] == 1)].copy()
+    kept = (inpatient[observable | (inpatient[TARGET] == 1)]
+            .merge(patients[["BIRTHDATE", "GENDER"]], left_on="PATIENT",
+                   right_index=True, how="left")
+            .reset_index(drop=True))
+
+    age_years = (kept["START"].dt.tz_localize(None) - kept["BIRTHDATE"]).dt.days / 365.25
+    kept = kept[(age_years >= 18) & (age_years <= 105)].copy()
+    kept["_age_exact"] = age_years[kept.index]
+    kept["age"] = kept["_age_exact"].round()
+    kept["gender_male"] = (kept["GENDER"] == "M").astype(int)
+    kept["length_of_stay"] = ((kept["STOP"] - kept["START"]).dt.total_seconds()
+                               / 86400).clip(lower=0.25)
+    kept["patient_id"] = (hospital + "-" + kept["PATIENT"].str[:8] + "-"
+                           + kept["START"].dt.date.astype(str))
 
     ed_enc = enc[enc["ENCOUNTERCLASS"].isin(ED_CLASSES)]
-    followup_enc = enc[enc["ENCOUNTERCLASS"].isin(FOLLOWUP_CLASSES)]
     conditions = t["conditions"]
     medications = t["medications"]
     labs = _lab_feature_map(t["observations"])
 
-    by_patient = {
-        "inpatient": {k: g for k, g in kept.groupby("PATIENT")},
-        "ed": {k: g for k, g in ed_enc.groupby("PATIENT")},
-        "followup": {k: g for k, g in followup_enc.groupby("PATIENT")},
-        "conditions": {k: g for k, g in conditions.groupby("PATIENT")},
-        "medications": {k: g for k, g in medications.groupby("PATIENT")},
-        "labs": {f: {k: g for k, g in df.groupby("PATIENT")}
-                 for f, df in labs.items()},
-    }
+    kept["n_prior_admissions"] = _windowed_count(
+        kept, "START", kept[["PATIENT", "STOP"]], "STOP", 365)
+    kept["ed_visits_6mo"] = _windowed_count(
+        kept, "START", ed_enc[["PATIENT", "START"]], "START", 180)
 
-    rows, lab_missing = [], {f: 0 for f in LAB_CODES}
-    for _, adm in kept.iterrows():
-        pid, start, stop = adm["PATIENT"], adm["START"], adm["STOP"]
-        if pid not in patients.index:
-            continue
-        patient = patients.loc[pid]
+    # n_diagnoses: count of conditions active (STARTed on/before discharge,
+    # not yet STOPped) at discharge time — via the same active-interval
+    # count used for the comorbidity flags below, over every condition.
+    kept["n_diagnoses"] = _active_interval_count(kept, "STOP", conditions)
 
-        age = (start.tz_localize(None) - patient["BIRTHDATE"]).days / 365.25
-        if not (18 <= age <= 105):
-            continue  # adult readmission model
+    desc_lower = conditions["DESCRIPTION"].astype(str).str.lower()
+    for feature, keywords in CONDITION_KEYWORDS.items():
+        matching = conditions[desc_lower.str.contains("|".join(keywords))]
+        kept[feature] = (_active_interval_count(kept, "STOP", matching) > 0).astype(int)
 
-        p_inp = by_patient["inpatient"].get(pid)
-        prior = int(((p_inp["STOP"] < start) &
-                     (p_inp["STOP"] >= start - pd.Timedelta(days=365))).sum())
+    kept["n_medications"] = _active_interval_count(kept, "STOP", medications)
 
-        p_ed = by_patient["ed"].get(pid)
-        ed_6mo = 0 if p_ed is None else int(
-            ((p_ed["START"] < start) &
-             (p_ed["START"] >= start - pd.Timedelta(days=180))).sum())
+    kept["charlson_index"] = (
+        kept["has_chf"] + kept["has_copd"] + kept["has_diabetes"]
+        + 2 * kept["has_renal_disease"] + (kept["_age_exact"] > 70).astype(int)
+    )
+    kept["discharged_to_snf"] = 0  # not modelled by Synthea
 
-        p_cond = by_patient["conditions"].get(pid)
-        flags = {f: 0 for f in CONDITION_KEYWORDS}
-        n_dx = 0
-        if p_cond is not None:
-            active = p_cond[(p_cond["START"] <= stop) &
-                            (p_cond["STOP"].isna() | (p_cond["STOP"] >= stop))]
-            n_dx = len(active)
-            desc = " | ".join(active["DESCRIPTION"].astype(str)).lower()
-            for feature, keywords in CONDITION_KEYWORDS.items():
-                flags[feature] = int(any(kw in desc for kw in keywords))
+    lab_missing = {}
+    for feature in LAB_CODES:
+        lab_events = labs[feature].rename(columns={"VALUE": "_value"})
+        values = _asof_last_value(kept, lab_events, "_value")
+        lab_missing[feature] = int(values.isna().sum())
+        kept[feature] = pd.to_numeric(values, errors="coerce")
 
-        p_med = by_patient["medications"].get(pid)
-        n_meds = 0 if p_med is None else int(
-            ((p_med["START"] <= stop) &
-             (p_med["STOP"].isna() | (p_med["STOP"] >= stop))).sum())
-
-        p_fu = by_patient["followup"].get(pid)
-        followup = 0 if p_fu is None else int(
-            ((p_fu["START"] > stop) &
-             (p_fu["START"] <= stop + pd.Timedelta(days=FOLLOWUP_WINDOW_DAYS))
-             ).any())
-
-        row = {
-            "patient_id": f"{hospital}-{pid[:8]}-{start.date()}",
-            "hospital": hospital,
-            "age": round(age),
-            "gender_male": int(patient["GENDER"] == "M"),
-            "length_of_stay": max(
-                (stop - start).total_seconds() / 86400, 0.25),
-            "n_prior_admissions": prior,
-            "ed_visits_6mo": ed_6mo,
-            "n_diagnoses": n_dx,
-            "n_medications": n_meds,
-            "charlson_index": (flags["has_chf"] + flags["has_copd"]
-                               + flags["has_diabetes"]
-                               + 2 * flags["has_renal_disease"]
-                               + int(age > 70)),
-            **flags,
-            "discharged_to_snf": 0,  # not modelled by Synthea
-            "followup_scheduled": followup,
-            TARGET: int(adm[TARGET]),
-        }
-        for feature in LAB_CODES:
-            p_lab = by_patient["labs"][feature].get(pid)
-            value = None
-            if p_lab is not None:
-                before = p_lab[p_lab["DATE"] <= stop]
-                if len(before):
-                    value = float(before.sort_values("DATE")["VALUE"].iloc[-1])
-            if value is None:
-                lab_missing[feature] += 1
-            row[feature] = value
-        rows.append(row)
-
-    df = pd.DataFrame(rows)
+    df = kept[["patient_id", "PATIENT"] + FEATURE_COLUMNS + [TARGET]].copy()
+    df.insert(1, "hospital", hospital)
+    df = df.drop(columns=["PATIENT"])
     if df.empty:
         raise ValueError(f"No usable adult admissions in {run_dir}")
 
     # Median-impute missing labs (rate reported in stats)
     for feature in LAB_CODES:
-        df[feature] = pd.to_numeric(df[feature], errors="coerce")
         df[feature] = df[feature].fillna(df[feature].median())
 
     stats = {
